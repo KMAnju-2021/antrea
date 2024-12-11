@@ -468,7 +468,7 @@ func (pc *podConfigurator) reconcile(pods []corev1.Pod, containerAccess *contain
 				continue
 			}
 			podWg.Add(1)
-			go func(containerID, pod, namespace string) {
+			go func(containerID, iface, pod, namespace string) {
 				defer podWg.Done()
 				// Do not install Pod flows until all preconditions are met.
 				podNetworkWait.Wait()
@@ -476,7 +476,7 @@ func (pc *podConfigurator) reconcile(pods []corev1.Pod, containerAccess *contain
 				containerAccess.lockContainer(containerID)
 				defer containerAccess.unlockContainer(containerID)
 
-				containerConfig, exists := pc.ifaceStore.GetContainerInterface(containerID)
+				containerConfig, exists := pc.ifaceStore.GetInterfaceByName(iface)
 				if !exists {
 					klog.InfoS("The container interface had been deleted, skip installing flows for Pod", "Pod", klog.KRef(namespace, name), "containerID", containerID)
 					return
@@ -496,7 +496,7 @@ func (pc *podConfigurator) reconcile(pods []corev1.Pod, containerAccess *contain
 				); err != nil {
 					klog.ErrorS(err, "Error when re-installing flows for Pod", "Pod", klog.KRef(namespace, name))
 				}
-			}(containerConfig.ContainerID, name, namespace)
+			}(containerConfig.ContainerID,containerConfig.InterfaceName, name, namespace)
 		} else {
 			// clean-up and delete interface
 			klog.V(4).InfoS("Deleting interface", "Pod", klog.KRef(namespace, name), "iface", containerConfig.InterfaceName)

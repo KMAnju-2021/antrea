@@ -294,6 +294,18 @@ func run(o *Options) error {
 		NodePortAddressesIPv6: nodePortAddressesIPv6,
 	}
 
+	if features.DefaultFeatureGate.Enabled(features.SecondaryNetwork) {
+		fmt.Printf("o.config.SecondaryNetwork.OVSBridges: %v\n", o.config.SecondaryNetwork.OVSBridges)
+		bridgeConfig := o.config.SecondaryNetwork.OVSBridges[0]
+		ovsSecBridgeClient := ovsconfig.NewOVSBridge(bridgeConfig.BridgeName, ovsDatapathType, ovsdbConnection, ovsconfig.WithRequiredPortExternalIDs(interfacestore.AntreaInterfaceTypeKey))
+		secondaryBridge :=agent.NewSecondaryBridgeInitializer(ovsSecBridgeClient, ifaceStore, bridgeConfig.BridgeName)
+		err := secondaryBridge.InitializeInterfaceStore()
+		if err != nil {
+			klog.ErrorS(err, "Failed to initialize the secondary bridge interface store")
+		}
+
+	}
+
 	// Initialize agent and node network.
 	agentInitializer := agent.NewInitializer(
 		k8sClient,

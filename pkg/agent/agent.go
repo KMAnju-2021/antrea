@@ -195,6 +195,24 @@ func NewInitializer(
 	}
 }
 
+type SecondaryBridgeInitializer struct {
+    ovsClient     ovsconfig.OVSBridgeClient
+    ifaceStore    interfacestore.InterfaceStore
+    bridgeName    string
+}
+
+func NewSecondaryBridgeInitializer(
+    ovsClient ovsconfig.OVSBridgeClient,
+    ifaceStore interfacestore.InterfaceStore,
+    bridgeName string,
+) *SecondaryBridgeInitializer {
+    return &SecondaryBridgeInitializer{
+        ovsClient:  ovsClient,
+        ifaceStore: ifaceStore,
+        bridgeName: bridgeName,
+    }
+}
+
 // GetNodeConfig returns the NodeConfig.
 func (i *Initializer) GetNodeConfig() *config.NodeConfig {
 	return i.nodeConfig
@@ -272,6 +290,47 @@ func (i *Initializer) validateSupportedDPFeatures() error {
 		}
 	}
 	return nil
+}
+
+func (s *SecondaryBridgeInitializer) InitializeInterfaceStore() error {
+    ovsPorts, err := s.ovsClient.GetPortList()
+    if err != nil {
+        klog.ErrorS(err, "Failed to list OVS ports for the secondary bridge", "bridgeName", s.bridgeName)
+        return err
+    }
+
+    ifaceList := make([]*interfacestore.InterfaceConfig, 0, len(ovsPorts))
+    for index := range ovsPorts {
+        port := &ovsPorts[index]
+        ovsPort := &interfacestore.OVSPortConfig{
+            PortUUID: port.UUID,
+            OFPort:   port.OFPort,
+        }
+
+        interfaceType, ok := port.ExternalIDs[interfacestore.AntreaInterfaceTypeKey]
+        if !ok {
+            klog.InfoS("Interface type is not set for the secondary bridge", "interfaceName", port.Name)
+            continue
+        }
+
+        var intf *interfacestore.InterfaceConfig
+        switch interfaceType {
+        case interfacestore.AntreaContainer:
+            intf = cniserver.ParseOVSPortInterfaceConfig(port, ovsPort)
+        default:
+            klog.InfoS("Unknown Antrea interface type for the secondary bridge", "type", interfaceType)
+        }
+
+        if intf != nil {
+            ifaceList = append(ifaceList, intf)
+        }
+
+    }
+	
+    s.ifaceStore.Initialize(ifaceList)
+    klog.InfoS("Successfully initialized the secondary bridge interface store", "bridgeName", s.bridgeName)
+	
+    return nil
 }
 
 // initInterfaceStore initializes InterfaceStore with all OVS ports retrieved
