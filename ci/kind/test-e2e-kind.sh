@@ -70,7 +70,10 @@ cleanup_only=false
 test_only=false
 run=""
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> 6d94347a (adding CNCF runner)
 flexible_ipam=false
 antrea_controller_image="antrea/antrea-controller-ubuntu"
 antrea_agent_image="antrea/antrea-agent-ubuntu"
@@ -95,7 +98,10 @@ case $key in
     shift
     ;;
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
+=======
+>>>>>>> 6d94347a (adding CNCF runner)
     --flexible-ipam)
     flexible_ipam=true
     shift
@@ -184,6 +190,9 @@ fi
 if $flexible_ipam; then
     manifest_args="$manifest_args --flexible-ipam"
 fi
+if $flexible_ipam; then
+    manifest_args="$manifest_args --flexible-ipam"
+fi
 
 COMMON_IMAGES_LIST=("k8s.gcr.io/e2e-test-images/agnhost:2.29" \
                     "projects.registry.vmware.com/antrea/busybox"  \
@@ -237,7 +246,10 @@ if $flexible_ipam; then
    vlan_args="$vlan_args --vlan-subnets 11=192.168.241.1/24 --vlan-subnets 12=192.168.242.1/24" 
 fi
 
+<<<<<<< HEAD
 >>>>>>> 326b8f47 (adding CNCF runner)
+=======
+>>>>>>> 6d94347a (adding CNCF runner)
 function setup_cluster {
   args=$1
 
@@ -268,7 +280,10 @@ function setup_cluster {
   if $flexible_ipam; then
     args="$args --flexible-ipam"
   fi
+<<<<<<< HEAD
 >>>>>>> 326b8f47 (adding CNCF runner)
+=======
+>>>>>>> 6d94347a (adding CNCF runner)
   echo "creating test bed with args $args"
   eval "timeout 600 $TESTBED_CMD create kind $args"
 }
