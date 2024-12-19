@@ -69,6 +69,14 @@ setup_only=false
 cleanup_only=false
 test_only=false
 run=""
+<<<<<<< HEAD
+=======
+flexible_ipam=false
+antrea_controller_image="antrea/antrea-controller-ubuntu"
+antrea_agent_image="antrea/antrea-agent-ubuntu"
+use_non_default_images=false
+antrea_image_tag="latest"
+>>>>>>> 326b8f47 (adding CNCF runner)
 while [[ $# -gt 0 ]]
 do
 key="$1"
@@ -86,6 +94,33 @@ case $key in
     proxy_all=true
     shift
     ;;
+<<<<<<< HEAD
+=======
+    --flexible-ipam)
+    flexible_ipam=true
+    shift
+    ;;
+    --no-kube-proxy)
+    no_kube_proxy=true
+    shift
+    ;;
+    --load-balancer-mode)
+    load_balancer_mode="$2"
+    shift 2
+    ;;
+    --node-ipam)
+    node_ipam=true
+    shift
+    ;;
+    --multicast)
+    multicast=true
+    shift
+    ;;
+    --bgp-policy)
+    bgp_policy=true
+    shift
+    ;;
+>>>>>>> 326b8f47 (adding CNCF runner)
     --ip-family)
     ipfamily="$2"
     shift 2
@@ -146,6 +181,9 @@ fi
 if $flow_visibility; then
     manifest_args="$manifest_args --feature-gates FlowExporter=true --extra-helm-values-file $FLOW_VISIBILITY_HELM_VALUES"
 fi
+if $flexible_ipam; then
+    manifest_args="$manifest_args --flexible-ipam"
+fi
 
 COMMON_IMAGES_LIST=("k8s.gcr.io/e2e-test-images/agnhost:2.29" \
                     "projects.registry.vmware.com/antrea/busybox"  \
@@ -182,6 +220,24 @@ done
 
 printf -v COMMON_IMAGES "%s " "${COMMON_IMAGES_LIST[@]}"
 
+<<<<<<< HEAD
+=======
+vlan_args=""
+if $extra_vlan; then
+  if [[ "$ipfamily" == "v4" ]]; then
+    vlan_args="$vlan_args --vlan-subnets 10=172.100.10.1/24"
+  elif [[ "$ipfamily" == "v6" ]]; then
+    vlan_args="$vlan_args --vlan-subnets 10=fd00:172:100:10::1/96"
+  elif [[ "$ipfamily" == "dual" ]]; then
+    vlan_args="$vlan_args --vlan-subnets 10=172.100.10.1/24,fd00:172:100:10::1/96"
+  fi
+fi
+
+if $flexible_ipam; then
+   vlan_args="$vlan_args --vlan-subnets 11=192.168.241.1/24 --vlan-subnets 12=192.168.242.1/24" 
+fi
+
+>>>>>>> 326b8f47 (adding CNCF runner)
 function setup_cluster {
   args=$1
 
@@ -194,7 +250,25 @@ function setup_cluster {
   if $proxy_all; then
     args="$args --no-kube-proxy"
   fi
+<<<<<<< HEAD
 
+=======
+  if $node_ipam; then
+    args="$args --no-kube-node-ipam"
+  fi
+  if $extra_network && [[ "$mode" != "hybrid" ]]; then
+    args="$args --extra-networks \"20.20.30.0/24\""
+  fi
+  # Deploy an external agnhost which could be used when testing Pod-to-External traffic.
+  args="$args --deploy-external-agnhost $vlan_args"
+  # Deploy an external FRR which could be used when testing BGPPolicy.
+  if $bgp_policy; then
+    args="$args --deploy-external-frr"
+  fi
+  if $flexible_ipam; then
+    args="$args --flexible-ipam"
+  fi
+>>>>>>> 326b8f47 (adding CNCF runner)
   echo "creating test bed with args $args"
   eval "timeout 600 $TESTBED_CMD create kind $args"
 }
@@ -242,7 +316,41 @@ function run_test {
   if [ -n "$run" ]; then
     RUN_OPT="-run $run"
   fi
+<<<<<<< HEAD
   go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR --skip=$skiplist $coverage_args
+=======
+
+  np_evaluation_flag=""
+  if $np_evaluation; then
+    np_evaluation_flag="--networkpolicy-evaluation"
+  fi
+
+  external_agnhost_cid=$(docker ps -f name="^antrea-external-agnhost" --format '{{.ID}}')
+  external_agnhost_ips=$(docker inspect $external_agnhost_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
+  EXTRA_ARGS="$vlan_args --external-agnhost-ips $external_agnhost_ips"
+
+  if $bgp_policy; then
+    external_frr_cid=$(docker ps -f name="^antrea-external-frr" --format '{{.ID}}')
+    external_frr_ips=$(docker inspect $external_frr_cid -f '{{.NetworkSettings.Networks.kind.IPAddress}},{{.NetworkSettings.Networks.kind.GlobalIPv6Address}}')
+    EXTRA_ARGS="$EXTRA_ARGS --external-frr-cid $external_frr_cid --external-frr-ips $external_frr_ips"
+  fi
+
+  if $flexible_ipam; then
+     EXTRA_ARGS="$EXTRA_ARGS --antrea-ipam"
+     timeout="100m"
+  fi
+ 
+  go test -v -timeout=$timeout $RUN_OPT antrea.io/antrea/test/e2e $flow_visibility_args -provider=kind --logs-export-dir=$ANTREA_LOG_DIR $np_evaluation_flag --skip-cases=$skiplist $coverage_args $EXTRA_ARGS
+
+  if $coverage; then
+    pushd $ANTREA_COV_DIR
+    for dir in */; do 
+      go tool covdata textfmt -i="${dir}" -o "${dir%?}_$(date +%Y-%m-%d_%H-%M-%S).cov.out"
+      rm -rf "${dir}";
+    done
+    popd
+  fi
+>>>>>>> 326b8f47 (adding CNCF runner)
 }
 
 if [[ "$mode" == "" ]] || [[ "$mode" == "encap" ]]; then

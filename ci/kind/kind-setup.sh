@@ -186,13 +186,144 @@ function configure_networks {
   done
 }
 
-function delete_networks {
-  networks=$(docker network ls -f name=antrea --format '{{.Name}}')
-  networks="$(echo $networks)"
-  if [[ ! -z $networks ]]; then
-    docker network rm $networks > /dev/null 2>&1
-    echo "deleted networks $networks"
+function configure_extra_networks {
+  if [[ -z $EXTRA_NETWORKS ]]; then
+    return
   fi
+  echo "Configuring extra networks"
+
+  # create new bridge networks
+  i=0
+  networks=()
+  for s in $EXTRA_NETWORKS ; do
+    network=antrea-$i
+    echo "creating network $network with $s"
+    docker network create -d bridge --subnet $s $network >/dev/null 2>&1
+    networks+=($network)
+    i=$((i+1))
+  done
+
+  nodes="$(kind get nodes --name $CLUSTER_NAME)"
+  for node in $nodes; do
+    for network in $networks; do
+      docker network connect $network $node >/dev/null 2>&1
+      echo "connected worker $node to network $network"
+    done
+  done
+}
+
+# update_kind_ipam_routes add and del routes for non-ipam test-pods.
+function update_kind_ipam_routes {
+  local operation="$1"
+  if [[ "$operation" == "del" ]]; then
+    echo "Deleting routes"
+  else  
+    echo "Adding routes"
+  fi
+
+  node_data=$(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDR}{" "}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null || true)
+  if [[ -z $node_data ]]; then
+    return
+  fi
+  echo "$node_data"| while read pod_cidr node_ip; do
+    docker_run_with_host_net ip route "$operation" "$pod_cidr" via "$node_ip" >/dev/null 2>&1 || true
+  done
+}
+
+function configure_vlan_subnets {
+  if [[ ${#VLAN_SUBNETS[@]} -eq 0 ]]; then
+    return
+  fi
+  echo "Configuring VLAN subnets"
+
+  bridge_id=$(docker network inspect kind -f {{.ID}})
+  bridge_interface="br-${bridge_id:0:12}"
+  
+  vlan_interfaces=()
+  for vlan_subnet in "${VLAN_SUBNETS[@]}"; do
+    # Extract VLAN ID and subnets
+    vlan_id=$(echo $vlan_subnet | cut -d= -f1)
+    subnets=$(echo $vlan_subnet | cut -d= -f2)
+    
+    vlan_interface="br-${bridge_id:0:7}.$vlan_id"
+    vlan_interfaces+=("$vlan_interface")
+
+    docker_run_with_host_net ip link add link $bridge_interface name $vlan_interface type vlan id $vlan_id
+    docker_run_with_host_net ip link set $vlan_interface up
+    
+    IFS=',' read -r -a subnet_array <<< "$subnets"
+    for subnet in "${subnet_array[@]}" ; do
+      echo "Configuring extra IP $subnet to VLAN interface $vlan_interface"
+      docker_run_with_host_net ip addr add dev $vlan_interface $subnet
+    done
+
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $bridge_interface -o $vlan_interface -j ACCEPT
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $vlan_interface -o $bridge_interface -j ACCEPT
+    docker_run_with_host_net iptables -t filter -A FORWARD -i $vlan_interface -o $vlan_interface -j ACCEPT
+  done
+
+  # Allow traffic between VLANs
+  for ((i=0; i<${#vlan_interfaces[@]}; i++)); do
+    for ((j=i+1; j<${#vlan_interfaces[@]}; j++)); do
+      docker_run_with_host_net iptables -t filter -A FORWARD -i ${vlan_interfaces[i]} -o ${vlan_interfaces[j]} -j ACCEPT
+      docker_run_with_host_net iptables -t filter -A FORWARD -i ${vlan_interfaces[j]} -o ${vlan_interfaces[i]} -j ACCEPT
+    done
+  done
+
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    docker_run_with_host_net ipset create excluded_subnets hash:net
+    docker_run_with_host_net ipset add excluded_subnets 192.168.241.0/24
+    docker_run_with_host_net ipset add excluded_subnets 192.168.242.0/24
+    docker_run_with_host_net ipset add excluded_subnets 192.168.240.0/24
+    docker_run_with_host_net ipset list excluded_subnets
+    
+    # Bypass default Docker SNAT rule for FlexibleIPAM traffic from the untagged subnet (192.168.240.0/24, which is the subnet for the Docker bridge network)
+    # and destined to the VLAN subnets (192.168.241.0/24, 192.168.242.0/24).
+    docker_run_with_host_net iptables -t nat -I POSTROUTING 1 ! -o $bridge_interface -s 192.168.240.0/24 -m set --match-set excluded_subnets dst -j RETURN
+
+    # With FlexibleIPAM, Antrea SNAT is disabled (noSNAT: true) so Pods don't have access to the external network by default (including regular / NodeIPAM Pods).
+    # Our e2e tests require external network access for regular Pods, so we need to add a custom SNAT rule.
+    docker_run_with_host_net iptables -t nat -A POSTROUTING ! -o $bridge_interface -s 10.244.0.0/16 -m set ! --match-set excluded_subnets dst -j MASQUERADE
+  fi
+}
+
+function delete_vlan_subnets {
+  echo "Deleting VLAN subnets"
+
+  bridge_id=$(docker network inspect kind -f {{.ID}})
+  bridge_interface="br-${bridge_id:0:12}"
+  vlan_interface_prefix="br-${bridge_id:0:7}."
+
+  found_vlan_interfaces=$(docker_run_with_host_net ip -br link show type vlan | cut -d " " -f 1)
+  for interface in $found_vlan_interfaces ; do
+    if [[ $interface =~ ${vlan_interface_prefix}[0-9]+@${bridge_interface} ]]; then
+      interface_name=${interface%@*}
+      docker_run_with_host_net iptables -t filter -D FORWARD -i $bridge_interface -o $interface_name -j ACCEPT || true
+      docker_run_with_host_net iptables -t filter -D FORWARD -o $bridge_interface -i $interface_name -j ACCEPT || true
+      docker_run_with_host_net ip link del $interface_name
+    fi
+  done
+
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 192.168.240.0/24 -m set --match-set excluded_subnets dst -j RETURN || true
+    docker_run_with_host_net iptables -t nat -D POSTROUTING ! -o $bridge_interface -s 10.244.0.0/16 -m set ! --match-set excluded_subnets dst -j MASQUERADE || true
+    docker_run_with_host_net ipset destroy excluded_subnets || true  
+  fi
+}
+
+function delete_network_by_filter {
+  local networks=$(docker network ls -f name="$1" --format '{{.Name}}')
+  if [[ -n $networks ]]; then
+    docker network rm $networks > /dev/null 2>&1
+    echo "Deleted networks: $networks"
+  fi
+}
+
+function delete_networks {
+  if [[ $FLEXIBLE_IPAM == true ]]; then
+    delete_network_by_filter "kind"
+  fi
+  delete_network_by_filter "antrea"
 }
 
 function load_images {
@@ -415,6 +546,40 @@ while [[ $# -gt 0 ]]
  esac
  done
 
+for option in "${options[@]}"; do
+    args=($option)
+    name="${args[0]}"
+    action="${args[1]}"
+    if [[ "$action" != "$ACTION" ]]; then
+        echoerr "Option '$name' cannot be used for '$ACTION'"
+        exit 1
+    fi
+  done
+
+if (( ${#positional_args[@]} > 1 )); then
+    echoerr "Too many positional arguments, only expected one (cluster name)"
+    exit 1
+fi
+
+if (( ${#positional_args[@]} == 1 )) && [[ "$CLUSTER_NAME" == "*" ]]; then
+    echoerr "Cannot specify cluster name when using --all"
+    exit 1
+fi
+
+if (( ${#positional_args[@]} == 1 )); then
+    CLUSTER_NAME=${positional_args[0]}
+fi
+
+if [[ -z "$CLUSTER_NAME" ]]; then
+    echoerr "Missing cluster name"
+    exit 1
+fi
+
+if [[ $ACTION == "destroy" ]]; then
+      destroy
+      exit
+fi
+
 kind_version=$(kind version | awk  '{print $2}')
 kind_version=${kind_version:1} # strip leading 'v'
 function version_lt() { test "$(printf '%s\n' "$@" | sort -rV | head -n 1)" != "$1"; }
@@ -427,3 +592,15 @@ if version_lt "$kind_version" "0.12.0" && [[ "$KUBE_PROXY_MODE" == "none" ]]; th
 fi
 
 create
+if [[ $ACTION == "create" ]]; then
+    if [[ ! -z $SUBNETS ]] && [[ ! -z $EXTRA_NETWORKS ]]; then
+        echoerr "Only one of '--subnets' and '--extra-networks' can be specified"
+        exit 1
+    fi
+
+   # Reserve IPs after 192.168.240.63 for e2e tests.
+    if [[ $FLEXIBLE_IPAM == true ]]; then
+        docker network create -d bridge --subnet 192.168.240.0/24 --gateway 192.168.240.1 --ip-range 192.168.240.0/26 kind
+    fi
+    create
+fi
